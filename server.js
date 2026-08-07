@@ -1,4 +1,6 @@
 const path = require('path');
+const fs = require('fs');
+const crypto = require('crypto');
 const express = require('express');
 const { Server } = require('socket.io');
 
@@ -6,8 +8,22 @@ const app = express();
 const httpServer = require('http').createServer(app);
 const io = new Server(httpServer);
 const rooms = new Map();
+const uploadDirectory = path.join(__dirname, 'uploads');
+fs.mkdirSync(uploadDirectory, { recursive: true });
 
 app.use(express.static(path.join(__dirname, 'public')));
+app.use('/uploads', express.static(uploadDirectory, { fallthrough: false, maxAge: 0 }));
+
+app.post('/api/upload', express.raw({ type: 'application/octet-stream', limit: '25mb' }), (req, res) => {
+  if (!req.body?.length) return res.status(400).json({ error: 'Файл не получен.' });
+  const originalName = decodeURIComponent(req.get('x-file-name') || 'file')
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').slice(0, 100) || 'file';
+  const storedName = `${crypto.randomUUID()}-${originalName}`;
+  fs.writeFile(path.join(uploadDirectory, storedName), req.body, (error) => {
+    if (error) return res.status(500).json({ error: 'Не удалось сохранить файл.' });
+    res.status(201).json({ name: originalName, url: `/uploads/${encodeURIComponent(storedName)}`, size: req.body.length, type: req.get('content-type') || 'application/octet-stream' });
+  });
+});
 
 app.get('/api/ice', (_req, res) => {
   const stunUrls = (process.env.STUN_URLS || 'stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302')
@@ -73,10 +89,11 @@ io.on('connection', (socket) => {
     socket.to(channelKey(roomId, next.id)).emit('peer-joined', { id: socket.id, name });
   });
 
-  socket.on('send-message', ({ channelId, text }) => {
+  socket.on('send-message', ({ channelId, text, file }) => {
     const room = rooms.get(socket.data.roomId); const channel = room?.channels.get(channelId); const message = String(text || '').trim().slice(0, 1000);
-    if (!channel || channel.type !== 'text' || !message) return;
-    const item = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, name: socket.data.name, text: message, at: Date.now() };
+    const attachment = file && typeof file.url === 'string' && file.url.startsWith('/uploads/') ? { name: cleanName(file.name, 'Файл'), url: file.url, size: Number(file.size) || 0, type: String(file.type || '') } : null;
+    if (!channel || channel.type !== 'text' || (!message && !attachment)) return;
+    const item = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, name: socket.data.name, text: message, file: attachment, at: Date.now() };
     channel.messages.push(item); if (channel.messages.length > 100) channel.messages.shift();
     io.to(socket.data.roomId).emit('chat-message', { channelId, message: item });
   });

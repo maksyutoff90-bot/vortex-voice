@@ -42,6 +42,7 @@ let activeTextChannel = 'text-general';
 let activeVoiceChannel = 'voice-general';
 const extraStyles = document.createElement('style');
 extraStyles.textContent = '.channels-panel{margin-top:22px}.channel-actions{display:flex;gap:7px;margin:0 8px 10px}.channel-actions button{border:0;border-radius:7px;background:#292934;color:#ddd;padding:7px;font:700 11px Manrope;cursor:pointer}.channel-item{width:100%;border:0;background:transparent;color:#c3c3ce;text-align:left;padding:8px;border-radius:7px;font:600 12px Manrope;cursor:pointer}.channel-item.active{background:#292833;color:#fff}.text-chat{margin:0 38px 0;padding:14px;border-bottom:1px solid #2e2e39;background:#15151b}.text-chat-head{display:flex;justify-content:space-between;align-items:center;font-size:12px;font-weight:800}.chat-messages{height:115px;overflow:auto;margin:10px 0;display:flex;flex-direction:column;gap:6px;font-size:12px}.chat-message{background:#202029;padding:7px 9px;border-radius:7px}.chat-message b{color:#a58cff;margin-right:6px}.chat-form{display:flex;gap:8px}.chat-form input{margin:0;padding:8px;font-size:12px}.chat-form button{margin:0;width:auto;padding:8px 12px}@media(max-width:700px){.text-chat{margin:0 18px}.chat-messages{height:100px}}';
+extraStyles.textContent += '.chat-file{display:inline-block;margin-top:6px;color:#c9beff;font-weight:700;text-decoration:none}';
 document.head.append(extraStyles);
 const channelsPanel = document.createElement('section'); channelsPanel.className = 'channels-panel';
 const channelsHeading = document.createElement('p'); channelsHeading.className = 'side-heading'; channelsHeading.textContent = 'КАНАЛЫ'; channelsPanel.append(channelsHeading);
@@ -57,16 +58,18 @@ const chatHead = document.createElement('div'); chatHead.className = 'text-chat-
 const chatTitle = document.createElement('span'); chatHead.append(chatTitle);
 const messages = document.createElement('div'); messages.className = 'chat-messages';
 const chatForm = document.createElement('form'); chatForm.className = 'chat-form';
+const fileInput = document.createElement('input'); fileInput.type = 'file'; fileInput.hidden = true;
+const attachButton = document.createElement('button'); attachButton.className = 'button secondary'; attachButton.type = 'button'; attachButton.title = 'Прикрепить файл'; attachButton.textContent = '📎';
 const chatInput = document.createElement('input'); chatInput.maxLength = 1000; chatInput.placeholder = 'Написать сообщение…';
 const sendButton = document.createElement('button'); sendButton.className = 'button secondary'; sendButton.type = 'submit'; sendButton.textContent = 'Отправить';
-chatForm.append(chatInput, sendButton); chatPanel.append(chatHead, messages, chatForm);
+chatForm.append(fileInput, attachButton, chatInput, sendButton); chatPanel.append(chatHead, messages, chatForm);
 document.querySelector('.content').insertBefore(chatPanel, el('stage'));
 
 function renderTextChat() {
   const channel = channels.find((item) => item.id === activeTextChannel && item.type === 'text') || channels.find((item) => item.type === 'text');
   if (!channel) { chatPanel.hidden = true; return; }
   activeTextChannel = channel.id; chatPanel.hidden = false; chatTitle.textContent = `# ${channel.name}`;
-  messages.replaceChildren(...(channel.messages || []).map((message) => { const item = document.createElement('div'); item.className = 'chat-message'; const author = document.createElement('b'); author.textContent = message.name; item.append(author, document.createTextNode(message.text)); return item; }));
+  messages.replaceChildren(...(channel.messages || []).map((message) => { const item = document.createElement('div'); item.className = 'chat-message'; const author = document.createElement('b'); author.textContent = message.name; item.append(author, document.createTextNode(message.text || '')); if (message.file) { const file = document.createElement('a'); file.className = 'chat-file'; file.href = message.file.url; file.download = message.file.name; file.textContent = `📎 ${message.file.name}`; item.append(document.createElement('br'), file); } return item; }));
   messages.scrollTop = messages.scrollHeight;
 }
 function renderChannels() {
@@ -86,6 +89,19 @@ function addChannel(type) { const name = prompt(type === 'voice' ? 'Назван
 addVoice.addEventListener('click', () => addChannel('voice'));
 addText.addEventListener('click', () => addChannel('text'));
 chatForm.addEventListener('submit', (event) => { event.preventDefault(); const text = chatInput.value.trim(); if (!text) return; socket.emit('send-message', { channelId: activeTextChannel, text }); chatInput.value = ''; });
+attachButton.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', async () => {
+  const file = fileInput.files?.[0]; if (!file) return; fileInput.value = '';
+  if (file.size > 25 * 1024 * 1024) { alert('Максимальный размер файла — 25 МБ.'); return; }
+  attachButton.disabled = true; attachButton.textContent = '…';
+  try {
+    const response = await fetch('/api/upload', { method: 'POST', headers: { 'content-type': 'application/octet-stream', 'x-file-name': encodeURIComponent(file.name) }, body: file });
+    if (!response.ok) throw new Error('upload failed');
+    const uploaded = await response.json();
+    socket.emit('send-message', { channelId: activeTextChannel, file: uploaded });
+  } catch { alert('Не удалось загрузить файл. Попробуйте ещё раз.'); }
+  finally { attachButton.disabled = false; attachButton.textContent = '📎'; }
+});
 
 const iceConfigReady = fetch('/api/ice')
   .then((response) => response.ok ? response.json() : Promise.reject())
