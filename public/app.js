@@ -1,6 +1,18 @@
 const socket = io();
-const roomId = new URLSearchParams(location.search).get('room') || crypto.randomUUID().slice(0, 8);
-if (!location.search.includes('room=')) history.replaceState({}, '', `?room=${roomId}`);
+const roomFromUrl = new URLSearchParams(location.search).get('room');
+let roomId = roomFromUrl || crypto.randomUUID().slice(0, 8);
+function normalizeRoom(value) {
+  return String(value || '').normalize('NFKC').trim().toLowerCase()
+    .replace(/[^\p{L}\p{N}_-]+/gu, '-').replace(/^-+|-+$/g, '').slice(0, 64);
+}
+function setRoomId(value) {
+  roomId = normalizeRoom(value) || roomId;
+  const url = new URL(location.href); url.searchParams.set('room', roomId);
+  history.replaceState({}, '', url);
+  el('channelTitle').textContent = `Комната #${roomId}`;
+  el('roomLabel').textContent = `# ${roomId}`;
+}
+if (!roomFromUrl) setRoomId(roomId);
 
 const peers = new Map();
 let myName = '';
@@ -10,10 +22,66 @@ let muted = false;
 let iceServers = [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }];
 const el = (id) => document.getElementById(id);
 
-el('channelTitle').textContent = `Комната #${roomId}`;
-el('roomLabel').textContent = `# ${roomId}`;
+setRoomId(roomId);
 const dialog = el('joinDialog');
 dialog.showModal();
+
+const roomInput = document.createElement('input');
+roomInput.id = 'roomInput'; roomInput.maxLength = 64; roomInput.autocomplete = 'off';
+roomInput.placeholder = 'Например, друзья-123'; roomInput.value = roomId;
+const roomField = document.createElement('label'); roomField.textContent = 'Название или номер комнаты';
+roomField.append(roomInput);
+el('nameInput').closest('label').before(roomField);
+
+let channels = [];
+let activeTextChannel = 'text-general';
+let activeVoiceChannel = 'voice-general';
+const extraStyles = document.createElement('style');
+extraStyles.textContent = '.channels-panel{margin-top:22px}.channel-actions{display:flex;gap:7px;margin:0 8px 10px}.channel-actions button{border:0;border-radius:7px;background:#292934;color:#ddd;padding:7px;font:700 11px Manrope;cursor:pointer}.channel-item{width:100%;border:0;background:transparent;color:#c3c3ce;text-align:left;padding:8px;border-radius:7px;font:600 12px Manrope;cursor:pointer}.channel-item.active{background:#292833;color:#fff}.text-chat{margin:0 38px 0;padding:14px;border-bottom:1px solid #2e2e39;background:#15151b}.text-chat-head{display:flex;justify-content:space-between;align-items:center;font-size:12px;font-weight:800}.chat-messages{height:115px;overflow:auto;margin:10px 0;display:flex;flex-direction:column;gap:6px;font-size:12px}.chat-message{background:#202029;padding:7px 9px;border-radius:7px}.chat-message b{color:#a58cff;margin-right:6px}.chat-form{display:flex;gap:8px}.chat-form input{margin:0;padding:8px;font-size:12px}.chat-form button{margin:0;width:auto;padding:8px 12px}@media(max-width:700px){.text-chat{margin:0 18px}.chat-messages{height:100px}}';
+document.head.append(extraStyles);
+const channelsPanel = document.createElement('section'); channelsPanel.className = 'channels-panel';
+const channelsHeading = document.createElement('p'); channelsHeading.className = 'side-heading'; channelsHeading.textContent = 'КАНАЛЫ'; channelsPanel.append(channelsHeading);
+const channelActions = document.createElement('div'); channelActions.className = 'channel-actions';
+const addVoice = document.createElement('button'); addVoice.textContent = '+ Голосовой';
+const addText = document.createElement('button'); addText.textContent = '+ Чат';
+channelActions.append(addVoice, addText); channelsPanel.append(channelActions);
+const channelList = document.createElement('div'); channelsPanel.append(channelList);
+document.querySelector('.sidebar').insertBefore(channelsPanel, document.querySelector('.side-bottom'));
+
+const chatPanel = document.createElement('section'); chatPanel.className = 'text-chat';
+const chatHead = document.createElement('div'); chatHead.className = 'text-chat-head';
+const chatTitle = document.createElement('span'); chatHead.append(chatTitle);
+const messages = document.createElement('div'); messages.className = 'chat-messages';
+const chatForm = document.createElement('form'); chatForm.className = 'chat-form';
+const chatInput = document.createElement('input'); chatInput.maxLength = 1000; chatInput.placeholder = 'Написать сообщение…';
+const sendButton = document.createElement('button'); sendButton.className = 'button secondary'; sendButton.type = 'submit'; sendButton.textContent = 'Отправить';
+chatForm.append(chatInput, sendButton); chatPanel.append(chatHead, messages, chatForm);
+document.querySelector('.content').insertBefore(chatPanel, el('stage'));
+
+function renderTextChat() {
+  const channel = channels.find((item) => item.id === activeTextChannel && item.type === 'text') || channels.find((item) => item.type === 'text');
+  if (!channel) { chatPanel.hidden = true; return; }
+  activeTextChannel = channel.id; chatPanel.hidden = false; chatTitle.textContent = `# ${channel.name}`;
+  messages.replaceChildren(...(channel.messages || []).map((message) => { const item = document.createElement('div'); item.className = 'chat-message'; const author = document.createElement('b'); author.textContent = message.name; item.append(author, document.createTextNode(message.text)); return item; }));
+  messages.scrollTop = messages.scrollHeight;
+}
+function renderChannels() {
+  channelList.replaceChildren();
+  for (const channel of channels) {
+    const button = document.createElement('button'); button.className = `channel-item ${channel.type === 'voice' && channel.id === activeVoiceChannel ? 'active' : ''}`;
+    button.textContent = `${channel.type === 'voice' ? '🔊' : '💬'} ${channel.name}`;
+    button.addEventListener('click', () => {
+      if (channel.type === 'voice') { activeVoiceChannel = channel.id; socket.emit('switch-voice-channel', { channelId: channel.id }); renderChannels(); }
+      else { activeTextChannel = channel.id; renderTextChat(); }
+    });
+    channelList.append(button);
+  }
+  renderTextChat();
+}
+function addChannel(type) { const name = prompt(type === 'voice' ? 'Название голосового канала' : 'Название текстового чата'); if (name?.trim()) socket.emit('create-channel', { type, name: name.trim() }); }
+addVoice.addEventListener('click', () => addChannel('voice'));
+addText.addEventListener('click', () => addChannel('text'));
+chatForm.addEventListener('submit', (event) => { event.preventDefault(); const text = chatInput.value.trim(); if (!text) return; socket.emit('send-message', { channelId: activeTextChannel, text }); chatInput.value = ''; });
 
 const iceConfigReady = fetch('/api/ice')
   .then((response) => response.ok ? response.json() : Promise.reject())
@@ -91,9 +159,11 @@ async function createPeer(peerId, name, makeOffer) {
 }
 function removePeer(id) { const peer = peers.get(id); peer?.pc.close(); peers.delete(id); document.getElementById(`card-${id}-audio`)?.remove(); document.getElementById(`card-${id}-screen`)?.remove(); document.querySelectorAll(`audio[data-peer="${id}"]`).forEach((audio) => audio.remove()); updateMembers(); }
 async function getMicrophone() { try { micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, voiceIsolation: true, channelCount: { ideal: 1 }, sampleRate: { ideal: 48000 } }, video: false }); } catch { alert('Не удалось получить доступ к микрофону. Проверьте разрешение в браузере.'); } }
-socket.on('room-peers', async list => { for (const p of list) await createPeer(p.id, p.name, true); });
+socket.on('room-peers', async list => { for (const id of [...peers.keys()]) removePeer(id); for (const p of list) await createPeer(p.id, p.name, true); });
 socket.on('peer-joined', ({ id, name }) => { createPeer(id, name, false); });
 socket.on('peer-left', ({ id }) => removePeer(id));
+socket.on('room-channels', (list) => { channels = Array.isArray(list) ? list : []; renderChannels(); });
+socket.on('chat-message', ({ channelId, message }) => { const channel = channels.find((item) => item.id === channelId); if (!channel || channel.type !== 'text') return; channel.messages ||= []; channel.messages.push(message); if (channel.messages.length > 100) channel.messages.shift(); if (channelId === activeTextChannel) renderTextChat(); });
 socket.on('signal', async ({ from, data }) => {
   let peer = peers.get(from);
   if (!peer) peer = await createPeer(from, 'Гость', false);
@@ -102,7 +172,7 @@ socket.on('signal', async ({ from, data }) => {
 socket.on('connect', () => { el('connectionText').textContent = 'В голосовом канале'; });
 socket.on('disconnect', () => { el('connectionText').textContent = 'Переподключение…'; });
 
-el('joinForm').addEventListener('submit', async (e) => { e.preventDefault(); myName = el('nameInput').value.trim(); if (!myName) return; await iceConfigReady; el('meName').textContent = myName; await getMicrophone(); socket.emit('join-room', { roomId, name: myName }); dialog.close(); addCard('me-audio', `${myName} (вы)`, null); updateMembers(); });
+el('joinForm').addEventListener('submit', async (e) => { e.preventDefault(); setRoomId(roomInput.value); myName = el('nameInput').value.trim(); if (!myName) return; await iceConfigReady; el('meName').textContent = myName; await getMicrophone(); socket.emit('join-room', { roomId, name: myName, channelId: activeVoiceChannel }); dialog.close(); addCard('me-audio', `${myName} (вы)`, null); updateMembers(); });
 el('micBtn').addEventListener('click', () => { if (!micStream) return; muted = !muted; micStream.getAudioTracks().forEach(t => t.enabled = !muted); el('micBtn').classList.toggle('off', muted); el('micBtn').textContent = muted ? '🔇' : '🎙'; });
 el('shareLink').addEventListener('click', async () => { await navigator.clipboard.writeText(location.href); const b = el('shareLink'); const old = b.textContent; b.textContent = 'Ссылка скопирована'; setTimeout(() => b.textContent = old, 1800); });
 async function stopScreenShare() {
