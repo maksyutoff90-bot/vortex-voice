@@ -31,9 +31,15 @@ function escapeHtml(value) { const d = document.createElement('div'); d.textCont
 function addCard(id, name, stream, screen = false) {
   document.getElementById(`card-${id}`)?.remove();
   const card = document.createElement('article'); card.className = `video-card ${screen ? 'screen' : ''}`; card.id = `card-${id}`;
-  if (stream) { const v = document.createElement('video'); v.autoplay = true; v.playsInline = true; v.srcObject = stream; card.append(v); }
+  let video;
+  if (stream) { video = document.createElement('video'); video.autoplay = true; video.playsInline = true; video.srcObject = stream; card.append(video); }
   else { const avatar = document.createElement('div'); avatar.className = 'avatar-stage'; avatar.textContent = initials(name); card.append(avatar); }
-  if (screen) { const tag = document.createElement('span'); tag.className = 'screen-tag'; tag.textContent = `${name} показывает экран`; card.append(tag); }
+  if (screen) {
+    const tag = document.createElement('span'); tag.className = 'screen-tag'; tag.textContent = `${name} показывает экран`; card.append(tag);
+    const fullscreen = document.createElement('button'); fullscreen.className = 'fullscreen-btn'; fullscreen.type = 'button'; fullscreen.title = 'На весь экран'; fullscreen.setAttribute('aria-label', 'На весь экран'); fullscreen.textContent = '⛶';
+    fullscreen.addEventListener('click', async () => { try { if (card.requestFullscreen) await card.requestFullscreen(); else if (video?.webkitEnterFullscreen) video.webkitEnterFullscreen(); } catch (error) { console.warn('Fullscreen error', error); } });
+    card.append(fullscreen);
+  }
   const label = document.createElement('span'); label.className = 'participant-name'; label.textContent = name; card.append(label); el('stage').append(card);
 }
 async function negotiate(peerId, peer) {
@@ -63,7 +69,7 @@ async function createPeer(peerId, name, makeOffer) {
   return peer;
 }
 function removePeer(id) { const peer = peers.get(id); peer?.pc.close(); peers.delete(id); document.getElementById(`card-${id}-audio`)?.remove(); document.getElementById(`card-${id}-screen`)?.remove(); updateMembers(); }
-async function getMicrophone() { try { micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false }); } catch { alert('Не удалось получить доступ к микрофону. Проверьте разрешение в браузере.'); } }
+async function getMicrophone() { try { micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, voiceIsolation: true, channelCount: { ideal: 1 }, sampleRate: { ideal: 48000 } }, video: false }); } catch { alert('Не удалось получить доступ к микрофону. Проверьте разрешение в браузере.'); } }
 socket.on('room-peers', async list => { for (const p of list) await createPeer(p.id, p.name, true); });
 socket.on('peer-joined', ({ id, name }) => { createPeer(id, name, false); });
 socket.on('peer-left', ({ id }) => removePeer(id));
