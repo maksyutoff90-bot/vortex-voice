@@ -32,7 +32,7 @@ function addCard(id, name, stream, screen = false) {
   document.getElementById(`card-${id}`)?.remove();
   const card = document.createElement('article'); card.className = `video-card ${screen ? 'screen' : ''}`; card.id = `card-${id}`;
   let video;
-  if (stream) { video = document.createElement('video'); video.autoplay = true; video.playsInline = true; video.srcObject = stream; card.append(video); }
+  if (stream) { video = document.createElement('video'); video.autoplay = true; video.playsInline = true; video.muted = screen; video.srcObject = stream; video.play().catch(() => {}); card.append(video); }
   else { const avatar = document.createElement('div'); avatar.className = 'avatar-stage'; avatar.textContent = initials(name); card.append(avatar); }
   if (screen) {
     const tag = document.createElement('span'); tag.className = 'screen-tag'; tag.textContent = `${name} показывает экран`; card.append(tag);
@@ -51,6 +51,20 @@ async function negotiate(peerId, peer) {
     socket.emit('signal', { to: peerId, data: { description: pc.localDescription } });
   } catch (error) { console.warn('Negotiation error', error); }
 }
+function unlockRemoteAudio() {
+  document.querySelectorAll('audio[data-remote-audio]').forEach((audio) => { audio.muted = false; audio.play().catch(() => {}); });
+  document.getElementById('audioUnlock')?.remove();
+}
+function addRemoteAudio(peerId, trackId, stream) {
+  const id = `audio-${peerId}-${trackId}`;
+  if (document.getElementById(id)) return;
+  const audio = document.createElement('audio'); audio.id = id; audio.autoplay = true; audio.playsInline = true; audio.dataset.remoteAudio = 'true'; audio.dataset.peer = peerId; audio.srcObject = stream;
+  audio.play().catch(() => {
+    if (document.getElementById('audioUnlock')) return;
+    const button = document.createElement('button'); button.id = 'audioUnlock'; button.className = 'audio-unlock'; button.textContent = 'Нажмите, чтобы включить звук'; button.addEventListener('click', unlockRemoteAudio); document.body.append(button);
+  });
+  document.body.append(audio);
+}
 async function createPeer(peerId, name, makeOffer) {
   if (peers.has(peerId)) return peers.get(peerId);
   const pc = new RTCPeerConnection({ iceServers });
@@ -62,13 +76,14 @@ async function createPeer(peerId, name, makeOffer) {
   pc.ontrack = ({ streams, track }) => {
     const stream = streams[0];
     const isScreen = track.kind === 'video';
-    addCard(`${peerId}-${isScreen ? 'screen' : 'audio'}`, name, isScreen ? stream : null, isScreen);
+    if (isScreen) addCard(`${peerId}-screen`, name, stream, true);
+    else { addCard(`${peerId}-audio`, name, null); addRemoteAudio(peerId, track.id, stream); }
   };
   pc.onconnectionstatechange = () => { if (['failed','closed'].includes(pc.connectionState)) removePeer(peerId); };
   if (makeOffer) await negotiate(peerId, peer);
   return peer;
 }
-function removePeer(id) { const peer = peers.get(id); peer?.pc.close(); peers.delete(id); document.getElementById(`card-${id}-audio`)?.remove(); document.getElementById(`card-${id}-screen`)?.remove(); updateMembers(); }
+function removePeer(id) { const peer = peers.get(id); peer?.pc.close(); peers.delete(id); document.getElementById(`card-${id}-audio`)?.remove(); document.getElementById(`card-${id}-screen`)?.remove(); document.querySelectorAll(`audio[data-peer="${id}"]`).forEach((audio) => audio.remove()); updateMembers(); }
 async function getMicrophone() { try { micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, voiceIsolation: true, channelCount: { ideal: 1 }, sampleRate: { ideal: 48000 } }, video: false }); } catch { alert('Не удалось получить доступ к микрофону. Проверьте разрешение в браузере.'); } }
 socket.on('room-peers', async list => { for (const p of list) await createPeer(p.id, p.name, true); });
 socket.on('peer-joined', ({ id, name }) => { createPeer(id, name, false); });
