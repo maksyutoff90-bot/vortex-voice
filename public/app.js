@@ -68,10 +68,14 @@ function addRemoteAudio(peerId, trackId, stream) {
 async function createPeer(peerId, name, makeOffer) {
   if (peers.has(peerId)) return peers.get(peerId);
   const pc = new RTCPeerConnection({ iceServers });
-  const peer = { pc, name, screenTrackId: null };
+  // Keep a video m-line in every offer. Otherwise a late joiner sends an
+  // audio-only offer and the current screen sharer cannot return video.
+  const videoTransceiver = pc.addTransceiver('video', { direction: screenStream ? 'sendrecv' : 'recvonly' });
+  const peer = { pc, name, videoTransceiver };
   peers.set(peerId, peer); updateMembers();
   micStream?.getTracks().forEach(t => pc.addTrack(t, micStream));
-  if (screenStream) screenStream.getTracks().forEach(t => pc.addTrack(t, screenStream));
+  const currentScreenTrack = screenStream?.getVideoTracks()[0];
+  if (currentScreenTrack) await videoTransceiver.sender.replaceTrack(currentScreenTrack);
   pc.onicecandidate = ({ candidate }) => candidate && socket.emit('signal', { to: peerId, data: { candidate } });
   pc.ontrack = ({ streams, track }) => {
     const stream = streams[0];
@@ -103,11 +107,31 @@ async function stopScreenShare() {
   if (!screenStream) return;
   const tracks = screenStream.getTracks();
   for (const [peerId, peer] of peers) {
-    peer.pc.getSenders().filter(sender => tracks.includes(sender.track)).forEach(sender => peer.pc.removeTrack(sender));
+    await peer.videoTransceiver?.sender.replaceTrack(null);
+    if (peer.videoTransceiver) peer.videoTransceiver.direction = 'recvonly';
     await negotiate(peerId, peer);
   }
   tracks.forEach(track => track.stop());
   screenStream = null; el('screenBtn').classList.remove('active'); document.getElementById('card-me-screen')?.remove();
 }
-el('screenBtn').addEventListener('click', async () => { try { if (screenStream) { await stopScreenShare(); return; } screenStream = await navigator.mediaDevices.getDisplayMedia({ video: { displaySurface: 'browser', width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60 } }, audio: true }); screenStream.getVideoTracks()[0].onended = () => { void stopScreenShare(); }; for (const [peerId, peer] of peers) { screenStream.getTracks().forEach(track => peer.pc.addTrack(track, screenStream)); await negotiate(peerId, peer); } addCard('me-screen', `${myName} (вы)`, screenStream, true); el('screenBtn').classList.add('active'); } catch (error) { if (error.name !== 'NotAllowedError') alert('Не удалось начать показ экрана.'); } });
+el('screenBtn').addEventListener('click', async () => {
+  try {
+    if (screenStream) { await stopScreenShare(); return; }
+    screenStream = await navigator.mediaDevices.getDisplayMedia({
+      video: { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60 } },
+      audio: false
+    });
+    const screenTrack = screenStream.getVideoTracks()[0];
+    screenTrack.onended = () => { void stopScreenShare(); };
+    for (const [peerId, peer] of peers) {
+      await peer.videoTransceiver.sender.replaceTrack(screenTrack);
+      peer.videoTransceiver.direction = 'sendrecv';
+      await negotiate(peerId, peer);
+    }
+    addCard('me-screen', `${myName} (вы)`, screenStream, true);
+    el('screenBtn').classList.add('active');
+  } catch (error) {
+    if (error.name !== 'NotAllowedError') alert('Не удалось начать показ экрана.');
+  }
+});
 el('leaveBtn').addEventListener('click', () => { micStream?.getTracks().forEach(t => t.stop()); screenStream?.getTracks().forEach(t => t.stop()); socket.disconnect(); location.href = '/'; });
