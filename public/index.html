@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vortex — голосовые комнаты</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <main class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="/" aria-label="Vortex"><span class="brand-mark">V</span><span>vortex</span></a>
+      <div class="side-heading">ВАША КОМНАТА</div>
+      <div class="room-chip active"><span class="pulse"></span><span id="roomLabel">Голосовой канал</span></div>
+      <div class="side-bottom"><span class="dot online"></span><span id="meName">Не в сети</span></div>
+    </aside>
+
+    <section class="content">
+      <header class="topbar"><div><p class="eyebrow">ГОЛОСОВАЯ КОМНАТА</p><h1 id="channelTitle">Гостиная</h1></div><button id="shareLink" class="button secondary">Скопировать приглашение</button></header>
+      <section class="stage" id="stage">
+        <div class="empty-state" id="emptyState"><div class="wave-icon">⌁</div><h2>Комната готова</h2><p>Пригласите друзей по ссылке — регистрация не нужна.</p></div>
+      </section>
+      <section class="members-panel"><div class="members-head"><span>В КАНАЛЕ</span><span id="memberCount">0</span></div><div id="members" class="members"></div></section>
+    </section>
+
+    <footer class="controls">
+      <div class="connection"><span class="signal-bars">▂▅▇</span><span id="connectionText">Подключаемся…</span></div>
+      <div class="control-buttons">
+        <button class="round" id="micBtn" title="Выключить микрофон">🎙</button>
+        <button class="round" id="screenBtn" title="Показать экран">▣</button>
+        <button class="round leave" id="leaveBtn" title="Покинуть комнату">☎</button>
+      </div>
+      <div class="quality">P2P · HD экран</div>
+    </footer>
+  </main>
+
+  <dialog id="joinDialog"><form method="dialog" id="joinForm"><div class="dialog-logo"><span class="brand-mark">V</span></div><h2>Зайти в комнату</h2><p>Введите имя, под которым вас увидят друзья.</p><label>Ваше имя<input id="nameInput" maxlength="32" autocomplete="name" placeholder="Например, Роберт" required autofocus></label><button class="button primary" value="join">Войти в голосовой канал</button><small>Без аккаунтов, паролей и скачиваний.</small></form></dialog>
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
