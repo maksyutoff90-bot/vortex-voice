@@ -12,7 +12,10 @@ function setRoomId(value) {
   el('channelTitle').textContent = `Комната #${roomId}`;
   el('roomLabel').textContent = `# ${roomId}`;
 }
-if (!roomFromUrl) setRoomId(roomId);
+if (!roomFromUrl) {
+  const url = new URL(location.href); url.searchParams.set('room', roomId);
+  history.replaceState({}, '', url);
+}
 
 const peers = new Map();
 let myName = '';
