@@ -22,6 +22,7 @@ let myName = '';
 let micStream;
 let screenStream;
 let muted = false;
+let listenOnly = false;
 let iceServers = [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }];
 const el = (id) => document.getElementById(id);
 
@@ -161,7 +162,16 @@ async function createPeer(peerId, name, makeOffer) {
   return peer;
 }
 function removePeer(id) { const peer = peers.get(id); peer?.pc.close(); peers.delete(id); document.getElementById(`card-${id}-audio`)?.remove(); document.getElementById(`card-${id}-screen`)?.remove(); document.querySelectorAll(`audio[data-peer="${id}"]`).forEach((audio) => audio.remove()); updateMembers(); }
-async function getMicrophone() { try { micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, voiceIsolation: true, channelCount: { ideal: 1 }, sampleRate: { ideal: 48000 } }, video: false }); } catch { alert('Не удалось получить доступ к микрофону. Проверьте разрешение в браузере.'); } }
+async function getMicrophone() {
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, voiceIsolation: true, channelCount: { ideal: 1 }, sampleRate: { ideal: 48000 } }, video: false });
+    return true;
+  } catch {
+    // A viewer does not need microphone permission to receive screen sharing.
+    listenOnly = true;
+    return false;
+  }
+}
 socket.on('room-peers', async list => { for (const id of [...peers.keys()]) removePeer(id); for (const p of list) await createPeer(p.id, p.name, true); });
 socket.on('peer-joined', ({ id, name }) => { createPeer(id, name, false); });
 socket.on('peer-left', ({ id }) => removePeer(id));
@@ -172,10 +182,10 @@ socket.on('signal', async ({ from, data }) => {
   if (!peer) peer = await createPeer(from, 'Гость', false);
   try { if (data.description) { await peer.pc.setRemoteDescription(data.description); if (data.description.type === 'offer') { const answer = await peer.pc.createAnswer(); await peer.pc.setLocalDescription(answer); socket.emit('signal', { to: from, data: { description: peer.pc.localDescription } }); } } else if (data.candidate) await peer.pc.addIceCandidate(data.candidate); } catch (error) { console.error('WebRTC signal error', error); }
 });
-socket.on('connect', () => { el('connectionText').textContent = 'В голосовом канале'; });
+socket.on('connect', () => { el('connectionText').textContent = listenOnly ? 'Режим просмотра без микрофона' : 'В голосовом канале'; });
 socket.on('disconnect', () => { el('connectionText').textContent = 'Переподключение…'; });
 
-el('joinForm').addEventListener('submit', async (e) => { e.preventDefault(); setRoomId(roomInput.value); myName = el('nameInput').value.trim(); if (!myName) return; await iceConfigReady; el('meName').textContent = myName; await getMicrophone(); socket.emit('join-room', { roomId, name: myName, channelId: activeVoiceChannel }); dialog.close(); addCard('me-audio', `${myName} (вы)`, null); updateMembers(); });
+el('joinForm').addEventListener('submit', async (e) => { e.preventDefault(); setRoomId(roomInput.value); myName = el('nameInput').value.trim(); if (!myName) return; await iceConfigReady; el('meName').textContent = myName; const hasMicrophone = await getMicrophone(); socket.emit('join-room', { roomId, name: myName, channelId: activeVoiceChannel }); dialog.close(); if (!hasMicrophone) { el('connectionText').textContent = 'Режим просмотра без микрофона'; el('micBtn').classList.add('off'); el('micBtn').disabled = true; } addCard('me-audio', `${myName} (вы)`, null); updateMembers(); });
 el('micBtn').addEventListener('click', () => { if (!micStream) return; muted = !muted; micStream.getAudioTracks().forEach(t => t.enabled = !muted); el('micBtn').classList.toggle('off', muted); el('micBtn').textContent = muted ? '🔇' : '🎙'; });
 el('shareLink').addEventListener('click', async () => { await navigator.clipboard.writeText(location.href); const b = el('shareLink'); const old = b.textContent; b.textContent = 'Ссылка скопирована'; setTimeout(() => b.textContent = old, 1800); });
 async function stopScreenShare() {
