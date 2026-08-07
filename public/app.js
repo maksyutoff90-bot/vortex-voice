@@ -78,7 +78,9 @@ async function createPeer(peerId, name, makeOffer) {
   if (currentScreenTrack) await videoTransceiver.sender.replaceTrack(currentScreenTrack);
   pc.onicecandidate = ({ candidate }) => candidate && socket.emit('signal', { to: peerId, data: { candidate } });
   pc.ontrack = ({ streams, track }) => {
-    const stream = streams[0];
+    // Tracks attached through a pre-created transceiver may not have an MSID,
+    // especially in mobile browsers. Build a stream from the track in that case.
+    const stream = streams[0] || new MediaStream([track]);
     const isScreen = track.kind === 'video';
     if (isScreen) addCard(`${peerId}-screen`, name, stream, true);
     else { addCard(`${peerId}-audio`, name, null); addRemoteAudio(peerId, track.id, stream); }
