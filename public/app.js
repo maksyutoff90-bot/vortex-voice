@@ -36,6 +36,15 @@ function addCard(id, name, stream, screen = false) {
   if (screen) { const tag = document.createElement('span'); tag.className = 'screen-tag'; tag.textContent = `${name} показывает экран`; card.append(tag); }
   const label = document.createElement('span'); label.className = 'participant-name'; label.textContent = name; card.append(label); el('stage').append(card);
 }
+async function negotiate(peerId, peer) {
+  const { pc } = peer;
+  if (pc.signalingState !== 'stable') return;
+  try {
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    socket.emit('signal', { to: peerId, data: { description: pc.localDescription } });
+  } catch (error) { console.warn('Negotiation error', error); }
+}
 async function createPeer(peerId, name, makeOffer) {
   if (peers.has(peerId)) return peers.get(peerId);
   const pc = new RTCPeerConnection({ iceServers });
@@ -44,21 +53,13 @@ async function createPeer(peerId, name, makeOffer) {
   micStream?.getTracks().forEach(t => pc.addTrack(t, micStream));
   if (screenStream) screenStream.getTracks().forEach(t => pc.addTrack(t, screenStream));
   pc.onicecandidate = ({ candidate }) => candidate && socket.emit('signal', { to: peerId, data: { candidate } });
-  pc.onnegotiationneeded = async () => {
-    if (pc.signalingState !== 'stable') return;
-    try {
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      socket.emit('signal', { to: peerId, data: { description: pc.localDescription } });
-    } catch (error) { console.warn('Negotiation error', error); }
-  };
   pc.ontrack = ({ streams, track }) => {
     const stream = streams[0];
     const isScreen = track.kind === 'video';
     addCard(`${peerId}-${isScreen ? 'screen' : 'audio'}`, name, isScreen ? stream : null, isScreen);
   };
   pc.onconnectionstatechange = () => { if (['failed','closed'].includes(pc.connectionState)) removePeer(peerId); };
-  if (makeOffer) { const offer = await pc.createOffer(); await pc.setLocalDescription(offer); socket.emit('signal', { to: peerId, data: { description: pc.localDescription } }); }
+  if (makeOffer) await negotiate(peerId, peer);
   return peer;
 }
 function removePeer(id) { const peer = peers.get(id); peer?.pc.close(); peers.delete(id); document.getElementById(`card-${id}-audio`)?.remove(); document.getElementById(`card-${id}-screen`)?.remove(); updateMembers(); }
@@ -77,12 +78,15 @@ socket.on('disconnect', () => { el('connectionText').textContent = 'Перепо
 el('joinForm').addEventListener('submit', async (e) => { e.preventDefault(); myName = el('nameInput').value.trim(); if (!myName) return; await iceConfigReady; el('meName').textContent = myName; await getMicrophone(); socket.emit('join-room', { roomId, name: myName }); dialog.close(); addCard('me-audio', `${myName} (вы)`, null); updateMembers(); });
 el('micBtn').addEventListener('click', () => { if (!micStream) return; muted = !muted; micStream.getAudioTracks().forEach(t => t.enabled = !muted); el('micBtn').classList.toggle('off', muted); el('micBtn').textContent = muted ? '🔇' : '🎙'; });
 el('shareLink').addEventListener('click', async () => { await navigator.clipboard.writeText(location.href); const b = el('shareLink'); const old = b.textContent; b.textContent = 'Ссылка скопирована'; setTimeout(() => b.textContent = old, 1800); });
-function stopScreenShare() {
+async function stopScreenShare() {
   if (!screenStream) return;
   const tracks = screenStream.getTracks();
-  for (const [, peer] of peers) peer.pc.getSenders().filter(sender => tracks.includes(sender.track)).forEach(sender => peer.pc.removeTrack(sender));
+  for (const [peerId, peer] of peers) {
+    peer.pc.getSenders().filter(sender => tracks.includes(sender.track)).forEach(sender => peer.pc.removeTrack(sender));
+    await negotiate(peerId, peer);
+  }
   tracks.forEach(track => track.stop());
   screenStream = null; el('screenBtn').classList.remove('active'); document.getElementById('card-me-screen')?.remove();
 }
-el('screenBtn').addEventListener('click', async () => { try { if (screenStream) { stopScreenShare(); return; } screenStream = await navigator.mediaDevices.getDisplayMedia({ video: { displaySurface: 'browser', width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60 } }, audio: true }); screenStream.getVideoTracks()[0].onended = stopScreenShare; for (const [, peer] of peers) screenStream.getTracks().forEach(track => peer.pc.addTrack(track, screenStream)); addCard('me-screen', `${myName} (вы)`, screenStream, true); el('screenBtn').classList.add('active'); } catch (error) { if (error.name !== 'NotAllowedError') alert('Не удалось начать показ экрана.'); } });
+el('screenBtn').addEventListener('click', async () => { try { if (screenStream) { await stopScreenShare(); return; } screenStream = await navigator.mediaDevices.getDisplayMedia({ video: { displaySurface: 'browser', width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60 } }, audio: true }); screenStream.getVideoTracks()[0].onended = () => { void stopScreenShare(); }; for (const [peerId, peer] of peers) { screenStream.getTracks().forEach(track => peer.pc.addTrack(track, screenStream)); await negotiate(peerId, peer); } addCard('me-screen', `${myName} (вы)`, screenStream, true); el('screenBtn').classList.add('active'); } catch (error) { if (error.name !== 'NotAllowedError') alert('Не удалось начать показ экрана.'); } });
 el('leaveBtn').addEventListener('click', () => { micStream?.getTracks().forEach(t => t.stop()); screenStream?.getTracks().forEach(t => t.stop()); socket.disconnect(); location.href = '/'; });
