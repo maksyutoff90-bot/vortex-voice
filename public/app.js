@@ -173,7 +173,7 @@ async function createPeer(peerId, name, makeOffer) {
   // audio-only offer and the current screen sharer cannot return video.
   const videoTransceiver = pc.addTransceiver('video', { direction: screenStream ? 'sendrecv' : 'recvonly' });
   const cameraTransceiver = pc.addTransceiver('video', { direction: cameraStream ? 'sendrecv' : 'recvonly' });
-  const peer = { pc, name, videoTransceiver, cameraTransceiver, hasRemoteVideo: false, pendingCandidates: [], screenSyncTimer: null };
+  const peer = { pc, name, videoTransceiver, cameraTransceiver, hasRemoteVideo: false, hasRemoteCamera: false, pendingCandidates: [], screenSyncTimer: null, cameraSyncTimer: null };
   peers.set(peerId, peer); updateMembers();
   micStream?.getTracks().forEach(t => pc.addTrack(t, micStream));
   const currentScreenTrack = screenStream?.getVideoTracks()[0];
@@ -195,7 +195,7 @@ async function createPeer(peerId, name, makeOffer) {
       // when it becomes live without requiring the viewer to reconnect.
       track.addEventListener('unmute', () => addCard(`${peerId}-screen`, name, stream, true), { once: true });
     }
-    else if (isCamera) addCard(`${peerId}-camera`, name, stream, false);
+    else if (isCamera) { peer.hasRemoteCamera = true; clearTimeout(peer.cameraSyncTimer); addCard(`${peerId}-camera`, name, stream, false); }
     else { addCard(`${peerId}-audio`, name, null); addRemoteAudio(peerId, track.id, stream); }
   };
   pc.onconnectionstatechange = () => {
@@ -206,11 +206,17 @@ async function createPeer(peerId, name, makeOffer) {
         if (pc.connectionState === 'connected' && !peer.hasRemoteVideo) socket.emit('signal', { to: peerId, data: { requestScreen: true } });
       }, 1800);
     }
+    if (pc.connectionState === 'connected' && !peer.hasRemoteCamera) {
+      clearTimeout(peer.cameraSyncTimer);
+      peer.cameraSyncTimer = setTimeout(() => {
+        if (pc.connectionState === 'connected' && !peer.hasRemoteCamera) socket.emit('signal', { to: peerId, data: { requestCamera: true } });
+      }, 1800);
+    }
   };
   if (makeOffer) await negotiate(peerId, peer);
   return peer;
 }
-function removePeer(id) { const peer = peers.get(id); clearTimeout(peer?.screenSyncTimer); peer?.pc.close(); peers.delete(id); document.getElementById(`card-${id}-audio`)?.remove(); document.getElementById(`card-${id}-camera`)?.remove(); document.getElementById(`card-${id}-screen`)?.remove(); document.querySelectorAll(`audio[data-peer="${id}"]`).forEach((audio) => audio.remove()); updateMembers(); }
+function removePeer(id) { const peer = peers.get(id); clearTimeout(peer?.screenSyncTimer); clearTimeout(peer?.cameraSyncTimer); peer?.pc.close(); peers.delete(id); document.getElementById(`card-${id}-audio`)?.remove(); document.getElementById(`card-${id}-camera`)?.remove(); document.getElementById(`card-${id}-screen`)?.remove(); document.querySelectorAll(`audio[data-peer="${id}"]`).forEach((audio) => audio.remove()); updateMembers(); }
 async function getMicrophone() {
   try {
     micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, voiceIsolation: true, channelCount: { ideal: 1 }, sampleRate: { ideal: 48000 } }, video: false });
@@ -233,6 +239,11 @@ socket.on('signal', async ({ from, data }) => {
     if (data.requestScreen) {
       const track = screenStream?.getVideoTracks()[0];
       if (track) { await peer.videoTransceiver.sender.replaceTrack(track); await tuneScreenSender(peer.videoTransceiver.sender, track); peer.videoTransceiver.direction = 'sendrecv'; await negotiate(from, peer); }
+      return;
+    }
+    if (data.requestCamera) {
+      const track = cameraStream?.getVideoTracks()[0];
+      if (track) { await peer.cameraTransceiver.sender.replaceTrack(track); peer.cameraTransceiver.direction = 'sendrecv'; await negotiate(from, peer); }
       return;
     }
     if (data.description) {
