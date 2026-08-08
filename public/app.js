@@ -159,7 +159,7 @@ async function createPeer(peerId, name, makeOffer) {
   // Keep a video m-line in every offer. Otherwise a late joiner sends an
   // audio-only offer and the current screen sharer cannot return video.
   const videoTransceiver = pc.addTransceiver('video', { direction: screenStream ? 'sendrecv' : 'recvonly' });
-  const peer = { pc, name, videoTransceiver };
+  const peer = { pc, name, videoTransceiver, hasRemoteVideo: false, pendingCandidates: [], screenSyncTimer: null };
   peers.set(peerId, peer); updateMembers();
   micStream?.getTracks().forEach(t => pc.addTrack(t, micStream));
   const currentScreenTrack = screenStream?.getVideoTracks()[0];
@@ -170,14 +170,29 @@ async function createPeer(peerId, name, makeOffer) {
     // especially in mobile browsers. Build a stream from the track in that case.
     const stream = streams[0] || new MediaStream([track]);
     const isScreen = track.kind === 'video';
-    if (isScreen) addCard(`${peerId}-screen`, name, stream, true);
+    if (isScreen) {
+      peer.hasRemoteVideo = true;
+      clearTimeout(peer.screenSyncTimer);
+      addCard(`${peerId}-screen`, name, stream, true);
+      // Safari can initially deliver a muted receiver track. Retry playback
+      // when it becomes live without requiring the viewer to reconnect.
+      track.addEventListener('unmute', () => addCard(`${peerId}-screen`, name, stream, true), { once: true });
+    }
     else { addCard(`${peerId}-audio`, name, null); addRemoteAudio(peerId, track.id, stream); }
   };
-  pc.onconnectionstatechange = () => { if (['failed','closed'].includes(pc.connectionState)) removePeer(peerId); };
+  pc.onconnectionstatechange = () => {
+    if (['failed','closed'].includes(pc.connectionState)) { removePeer(peerId); return; }
+    if (pc.connectionState === 'connected' && !peer.hasRemoteVideo) {
+      clearTimeout(peer.screenSyncTimer);
+      peer.screenSyncTimer = setTimeout(() => {
+        if (pc.connectionState === 'connected' && !peer.hasRemoteVideo) socket.emit('signal', { to: peerId, data: { requestScreen: true } });
+      }, 1800);
+    }
+  };
   if (makeOffer) await negotiate(peerId, peer);
   return peer;
 }
-function removePeer(id) { const peer = peers.get(id); peer?.pc.close(); peers.delete(id); document.getElementById(`card-${id}-audio`)?.remove(); document.getElementById(`card-${id}-screen`)?.remove(); document.querySelectorAll(`audio[data-peer="${id}"]`).forEach((audio) => audio.remove()); updateMembers(); }
+function removePeer(id) { const peer = peers.get(id); clearTimeout(peer?.screenSyncTimer); peer?.pc.close(); peers.delete(id); document.getElementById(`card-${id}-audio`)?.remove(); document.getElementById(`card-${id}-screen`)?.remove(); document.querySelectorAll(`audio[data-peer="${id}"]`).forEach((audio) => audio.remove()); updateMembers(); }
 async function getMicrophone() {
   try {
     micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, voiceIsolation: true, channelCount: { ideal: 1 }, sampleRate: { ideal: 48000 } }, video: false });
@@ -196,7 +211,21 @@ socket.on('chat-message', ({ channelId, message }) => { const channel = channels
 socket.on('signal', async ({ from, data }) => {
   let peer = peers.get(from);
   if (!peer) peer = await createPeer(from, 'Гость', false);
-  try { if (data.description) { await peer.pc.setRemoteDescription(data.description); if (data.description.type === 'offer') { const answer = await peer.pc.createAnswer(); await peer.pc.setLocalDescription(answer); socket.emit('signal', { to: from, data: { description: peer.pc.localDescription } }); } } else if (data.candidate) await peer.pc.addIceCandidate(data.candidate); } catch (error) { console.error('WebRTC signal error', error); }
+  try {
+    if (data.requestScreen) {
+      const track = screenStream?.getVideoTracks()[0];
+      if (track) { await peer.videoTransceiver.sender.replaceTrack(track); peer.videoTransceiver.direction = 'sendrecv'; await negotiate(from, peer); }
+      return;
+    }
+    if (data.description) {
+      await peer.pc.setRemoteDescription(data.description);
+      for (const candidate of peer.pendingCandidates.splice(0)) await peer.pc.addIceCandidate(candidate);
+      if (data.description.type === 'offer') { const answer = await peer.pc.createAnswer(); await peer.pc.setLocalDescription(answer); socket.emit('signal', { to: from, data: { description: peer.pc.localDescription } }); }
+    } else if (data.candidate) {
+      if (peer.pc.remoteDescription) await peer.pc.addIceCandidate(data.candidate);
+      else peer.pendingCandidates.push(data.candidate);
+    }
+  } catch (error) { console.error('WebRTC signal error', error); }
 });
 socket.on('connect', () => { el('connectionText').textContent = listenOnly ? 'Режим просмотра без микрофона' : 'В голосовом канале'; });
 socket.on('disconnect', () => { el('connectionText').textContent = 'Переподключение…'; });
