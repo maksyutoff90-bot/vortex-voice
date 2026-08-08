@@ -20,6 +20,7 @@ if (!roomFromUrl) {
 const peers = new Map();
 let myName = '';
 let micStream;
+let cameraStream;
 let screenStream;
 let muted = false;
 let listenOnly = false;
@@ -171,17 +172,21 @@ async function createPeer(peerId, name, makeOffer) {
   // Keep a video m-line in every offer. Otherwise a late joiner sends an
   // audio-only offer and the current screen sharer cannot return video.
   const videoTransceiver = pc.addTransceiver('video', { direction: screenStream ? 'sendrecv' : 'recvonly' });
-  const peer = { pc, name, videoTransceiver, hasRemoteVideo: false, pendingCandidates: [], screenSyncTimer: null };
+  const cameraTransceiver = pc.addTransceiver('video', { direction: cameraStream ? 'sendrecv' : 'recvonly' });
+  const peer = { pc, name, videoTransceiver, cameraTransceiver, hasRemoteVideo: false, pendingCandidates: [], screenSyncTimer: null };
   peers.set(peerId, peer); updateMembers();
   micStream?.getTracks().forEach(t => pc.addTrack(t, micStream));
   const currentScreenTrack = screenStream?.getVideoTracks()[0];
   if (currentScreenTrack) { await videoTransceiver.sender.replaceTrack(currentScreenTrack); await tuneScreenSender(videoTransceiver.sender, currentScreenTrack); }
+  const currentCameraTrack = cameraStream?.getVideoTracks()[0];
+  if (currentCameraTrack) await cameraTransceiver.sender.replaceTrack(currentCameraTrack);
   pc.onicecandidate = ({ candidate }) => candidate && socket.emit('signal', { to: peerId, data: { candidate } });
-  pc.ontrack = ({ streams, track }) => {
+  pc.ontrack = ({ streams, track, transceiver }) => {
     // Tracks attached through a pre-created transceiver may not have an MSID,
     // especially in mobile browsers. Build a stream from the track in that case.
     const stream = streams[0] || new MediaStream([track]);
-    const isScreen = track.kind === 'video';
+    const isScreen = transceiver === peer.videoTransceiver;
+    const isCamera = transceiver === peer.cameraTransceiver;
     if (isScreen) {
       peer.hasRemoteVideo = true;
       clearTimeout(peer.screenSyncTimer);
@@ -190,6 +195,7 @@ async function createPeer(peerId, name, makeOffer) {
       // when it becomes live without requiring the viewer to reconnect.
       track.addEventListener('unmute', () => addCard(`${peerId}-screen`, name, stream, true), { once: true });
     }
+    else if (isCamera) addCard(`${peerId}-camera`, name, stream, false);
     else { addCard(`${peerId}-audio`, name, null); addRemoteAudio(peerId, track.id, stream); }
   };
   pc.onconnectionstatechange = () => {
@@ -204,7 +210,7 @@ async function createPeer(peerId, name, makeOffer) {
   if (makeOffer) await negotiate(peerId, peer);
   return peer;
 }
-function removePeer(id) { const peer = peers.get(id); clearTimeout(peer?.screenSyncTimer); peer?.pc.close(); peers.delete(id); document.getElementById(`card-${id}-audio`)?.remove(); document.getElementById(`card-${id}-screen`)?.remove(); document.querySelectorAll(`audio[data-peer="${id}"]`).forEach((audio) => audio.remove()); updateMembers(); }
+function removePeer(id) { const peer = peers.get(id); clearTimeout(peer?.screenSyncTimer); peer?.pc.close(); peers.delete(id); document.getElementById(`card-${id}-audio`)?.remove(); document.getElementById(`card-${id}-camera`)?.remove(); document.getElementById(`card-${id}-screen`)?.remove(); document.querySelectorAll(`audio[data-peer="${id}"]`).forEach((audio) => audio.remove()); updateMembers(); }
 async function getMicrophone() {
   try {
     micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, voiceIsolation: true, channelCount: { ideal: 1 }, sampleRate: { ideal: 48000 } }, video: false });
@@ -245,6 +251,30 @@ socket.on('disconnect', () => { el('connectionText').textContent = 'Перепо
 el('joinForm').addEventListener('submit', async (e) => { e.preventDefault(); setRoomId(roomInput.value); myName = el('nameInput').value.trim(); if (!myName) return; await iceConfigReady; el('meName').textContent = myName; const hasMicrophone = await getMicrophone(); socket.emit('join-room', { roomId, name: myName, channelId: activeVoiceChannel }); dialog.close(); if (!hasMicrophone) { el('connectionText').textContent = 'Режим просмотра без микрофона'; el('micBtn').classList.add('off'); el('micBtn').disabled = true; } addCard('me-audio', `${myName} (вы)`, null); updateMembers(); });
 el('micBtn').addEventListener('click', () => { if (!micStream) return; muted = !muted; micStream.getAudioTracks().forEach(t => t.enabled = !muted); el('micBtn').classList.toggle('off', muted); el('micBtn').textContent = muted ? '🔇' : '🎙'; });
 el('shareLink').addEventListener('click', async () => { await navigator.clipboard.writeText(location.href); const b = el('shareLink'); const old = b.textContent; b.textContent = 'Ссылка скопирована'; setTimeout(() => b.textContent = old, 1800); });
+async function stopCamera() {
+  if (!cameraStream) return;
+  for (const [peerId, peer] of peers) {
+    await peer.cameraTransceiver?.sender.replaceTrack(null);
+    if (peer.cameraTransceiver) peer.cameraTransceiver.direction = 'recvonly';
+    await negotiate(peerId, peer);
+  }
+  cameraStream.getTracks().forEach((track) => track.stop()); cameraStream = null;
+  el('cameraBtn').classList.remove('active'); document.getElementById('card-me-camera')?.remove();
+}
+el('cameraBtn').addEventListener('click', async () => {
+  try {
+    if (cameraStream) { await stopCamera(); return; }
+    cameraStream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 }, facingMode: 'user' }, audio: false });
+    const cameraTrack = cameraStream.getVideoTracks()[0]; cameraTrack.contentHint = 'motion';
+    cameraTrack.onended = () => { void stopCamera(); };
+    for (const [peerId, peer] of peers) {
+      await peer.cameraTransceiver.sender.replaceTrack(cameraTrack);
+      peer.cameraTransceiver.direction = 'sendrecv';
+      await negotiate(peerId, peer);
+    }
+    addCard('me-camera', `${myName} (вы)`, cameraStream, false); el('cameraBtn').classList.add('active');
+  } catch (error) { if (error.name !== 'NotAllowedError') alert('Не удалось включить камеру.'); }
+});
 async function stopScreenShare() {
   if (!screenStream) return;
   const tracks = screenStream.getTracks();
