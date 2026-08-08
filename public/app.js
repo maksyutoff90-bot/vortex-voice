@@ -185,8 +185,10 @@ async function createPeer(peerId, name, makeOffer) {
     // Tracks attached through a pre-created transceiver may not have an MSID,
     // especially in mobile browsers. Build a stream from the track in that case.
     const stream = streams[0] || new MediaStream([track]);
-    const isScreen = transceiver === peer.videoTransceiver;
-    const isCamera = transceiver === peer.cameraTransceiver;
+    const isScreen = transceiver === peer.videoTransceiver || transceiver?.mid === peer.videoTransceiver?.mid;
+    // Some mobile browsers expose a different transceiver object in ontrack.
+    // Any other incoming video track is therefore treated as camera video.
+    const isCamera = track.kind === 'video' && !isScreen;
     if (isScreen) {
       peer.hasRemoteVideo = true;
       clearTimeout(peer.screenSyncTimer);
