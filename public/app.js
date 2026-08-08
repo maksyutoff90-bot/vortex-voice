@@ -153,6 +153,18 @@ function addRemoteAudio(peerId, trackId, stream) {
   });
   document.body.append(audio);
 }
+async function tuneScreenSender(sender, track) {
+  if (!sender || !track) return;
+  track.contentHint = 'detail';
+  try {
+    const parameters = sender.getParameters();
+    parameters.degradationPreference = 'maintain-resolution';
+    const encoding = parameters.encodings?.[0] || {};
+    Object.assign(encoding, { maxBitrate: 8000000, maxFramerate: 60, scaleResolutionDownBy: 1 });
+    parameters.encodings = [encoding];
+    await sender.setParameters(parameters);
+  } catch (error) { console.debug('Screen quality tuning unavailable', error); }
+}
 async function createPeer(peerId, name, makeOffer) {
   if (peers.has(peerId)) return peers.get(peerId);
   const pc = new RTCPeerConnection({ iceServers });
@@ -163,7 +175,7 @@ async function createPeer(peerId, name, makeOffer) {
   peers.set(peerId, peer); updateMembers();
   micStream?.getTracks().forEach(t => pc.addTrack(t, micStream));
   const currentScreenTrack = screenStream?.getVideoTracks()[0];
-  if (currentScreenTrack) await videoTransceiver.sender.replaceTrack(currentScreenTrack);
+  if (currentScreenTrack) { await videoTransceiver.sender.replaceTrack(currentScreenTrack); await tuneScreenSender(videoTransceiver.sender, currentScreenTrack); }
   pc.onicecandidate = ({ candidate }) => candidate && socket.emit('signal', { to: peerId, data: { candidate } });
   pc.ontrack = ({ streams, track }) => {
     // Tracks attached through a pre-created transceiver may not have an MSID,
@@ -214,7 +226,7 @@ socket.on('signal', async ({ from, data }) => {
   try {
     if (data.requestScreen) {
       const track = screenStream?.getVideoTracks()[0];
-      if (track) { await peer.videoTransceiver.sender.replaceTrack(track); peer.videoTransceiver.direction = 'sendrecv'; await negotiate(from, peer); }
+      if (track) { await peer.videoTransceiver.sender.replaceTrack(track); await tuneScreenSender(peer.videoTransceiver.sender, track); peer.videoTransceiver.direction = 'sendrecv'; await negotiate(from, peer); }
       return;
     }
     if (data.description) {
@@ -252,9 +264,11 @@ el('screenBtn').addEventListener('click', async () => {
       audio: false
     });
     const screenTrack = screenStream.getVideoTracks()[0];
+    screenTrack.contentHint = 'detail';
     screenTrack.onended = () => { void stopScreenShare(); };
     for (const [peerId, peer] of peers) {
       await peer.videoTransceiver.sender.replaceTrack(screenTrack);
+      await tuneScreenSender(peer.videoTransceiver.sender, screenTrack);
       peer.videoTransceiver.direction = 'sendrecv';
       await negotiate(peerId, peer);
     }
