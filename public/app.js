@@ -173,9 +173,11 @@ async function createPeer(peerId, name, makeOffer) {
   // audio-only offer and the current screen sharer cannot return video.
   const videoTransceiver = pc.addTransceiver('video', { direction: screenStream ? 'sendrecv' : 'recvonly' });
   const cameraTransceiver = pc.addTransceiver('video', { direction: cameraStream ? 'sendrecv' : 'recvonly' });
-  const peer = { pc, name, videoTransceiver, cameraTransceiver, hasRemoteVideo: false, hasRemoteCamera: false, pendingCandidates: [], screenSyncTimer: null, cameraSyncTimer: null };
+  const audioTransceiver = pc.addTransceiver('audio', { direction: micStream ? 'sendrecv' : 'recvonly' });
+  const peer = { pc, name, videoTransceiver, cameraTransceiver, audioTransceiver, hasRemoteVideo: false, hasRemoteCamera: false, pendingCandidates: [], screenSyncTimer: null, cameraSyncTimer: null };
   peers.set(peerId, peer); updateMembers();
-  micStream?.getTracks().forEach(t => pc.addTrack(t, micStream));
+  const currentMicTrack = micStream?.getAudioTracks()[0];
+  if (currentMicTrack) await audioTransceiver.sender.replaceTrack(currentMicTrack);
   const currentScreenTrack = screenStream?.getVideoTracks()[0];
   if (currentScreenTrack) { await videoTransceiver.sender.replaceTrack(currentScreenTrack); await tuneScreenSender(videoTransceiver.sender, currentScreenTrack); }
   const currentCameraTrack = cameraStream?.getVideoTracks()[0];
@@ -229,6 +231,19 @@ async function getMicrophone() {
     return false;
   }
 }
+function showMicrophoneRequest() {
+  if (document.getElementById('micRequest')) return;
+  const button = document.createElement('button'); button.id = 'micRequest'; button.className = 'button primary'; button.textContent = 'Разрешить микрофон';
+  button.style.cssText = 'position:fixed;z-index:30;left:50%;bottom:84px;transform:translateX(-50%);width:auto;margin:0;white-space:nowrap';
+  button.addEventListener('click', async () => {
+    button.disabled = true; button.textContent = 'Запрашиваем доступ…';
+    const granted = await getMicrophone();
+    if (!granted) { button.disabled = false; button.textContent = 'Открыть настройки микрофона'; return; }
+    for (const [peerId, peer] of peers) { await peer.audioTransceiver.sender.replaceTrack(micStream.getAudioTracks()[0]); peer.audioTransceiver.direction = 'sendrecv'; await negotiate(peerId, peer); }
+    listenOnly = false; el('connectionText').textContent = 'В голосовом канале'; el('micBtn').disabled = false; el('micBtn').classList.remove('off'); button.remove();
+  });
+  document.body.append(button);
+}
 socket.on('room-peers', async list => { for (const id of [...peers.keys()]) removePeer(id); for (const p of list) await createPeer(p.id, p.name, true); });
 socket.on('peer-joined', ({ id, name }) => { createPeer(id, name, false); });
 socket.on('peer-left', ({ id }) => removePeer(id));
@@ -261,7 +276,7 @@ socket.on('signal', async ({ from, data }) => {
 socket.on('connect', () => { el('connectionText').textContent = listenOnly ? 'Режим просмотра без микрофона' : 'В голосовом канале'; });
 socket.on('disconnect', () => { el('connectionText').textContent = 'Переподключение…'; });
 
-el('joinForm').addEventListener('submit', async (e) => { e.preventDefault(); setRoomId(roomInput.value); myName = el('nameInput').value.trim(); if (!myName) return; await iceConfigReady; el('meName').textContent = myName; const hasMicrophone = await getMicrophone(); socket.emit('join-room', { roomId, name: myName, channelId: activeVoiceChannel }); dialog.close(); if (!hasMicrophone) { el('connectionText').textContent = 'Режим просмотра без микрофона'; el('micBtn').classList.add('off'); el('micBtn').disabled = true; } addCard('me-audio', `${myName} (вы)`, null); updateMembers(); });
+el('joinForm').addEventListener('submit', async (e) => { e.preventDefault(); setRoomId(roomInput.value); myName = el('nameInput').value.trim(); if (!myName) return; await iceConfigReady; el('meName').textContent = myName; const hasMicrophone = await getMicrophone(); socket.emit('join-room', { roomId, name: myName, channelId: activeVoiceChannel }); dialog.close(); if (!hasMicrophone) { el('connectionText').textContent = 'Режим просмотра без микрофона'; el('micBtn').classList.add('off'); el('micBtn').disabled = true; showMicrophoneRequest(); } addCard('me-audio', `${myName} (вы)`, null); updateMembers(); });
 el('micBtn').addEventListener('click', () => { if (!micStream) return; muted = !muted; micStream.getAudioTracks().forEach(t => t.enabled = !muted); el('micBtn').classList.toggle('off', muted); el('micBtn').textContent = muted ? '🔇' : '🎙'; });
 el('shareLink').addEventListener('click', async () => { await navigator.clipboard.writeText(location.href); const b = el('shareLink'); const old = b.textContent; b.textContent = 'Ссылка скопирована'; setTimeout(() => b.textContent = old, 1800); });
 async function stopCamera() {
