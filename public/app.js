@@ -259,11 +259,11 @@ async function stopCamera() {
     await negotiate(peerId, peer);
   }
   cameraStream.getTracks().forEach((track) => track.stop()); cameraStream = null;
-  el('cameraBtn').classList.remove('active'); document.getElementById('card-me-camera')?.remove();
+  el('cameraOnBtn').classList.remove('active'); el('cameraOffBtn').classList.add('off'); document.getElementById('card-me-camera')?.remove();
 }
-el('cameraBtn').addEventListener('click', async () => {
+el('cameraOnBtn').addEventListener('click', async () => {
   try {
-    if (cameraStream) { await stopCamera(); return; }
+    if (cameraStream) return;
     cameraStream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 }, facingMode: 'user' }, audio: false });
     const cameraTrack = cameraStream.getVideoTracks()[0]; cameraTrack.contentHint = 'motion';
     cameraTrack.onended = () => { void stopCamera(); };
@@ -272,9 +272,10 @@ el('cameraBtn').addEventListener('click', async () => {
       peer.cameraTransceiver.direction = 'sendrecv';
       await negotiate(peerId, peer);
     }
-    addCard('me-camera', `${myName} (вы)`, cameraStream, false); el('cameraBtn').classList.add('active');
+    addCard('me-camera', `${myName} (вы)`, cameraStream, false); el('cameraOnBtn').classList.add('active'); el('cameraOffBtn').classList.remove('off');
   } catch (error) { if (error.name !== 'NotAllowedError') alert('Не удалось включить камеру.'); }
 });
+el('cameraOffBtn').addEventListener('click', () => { void stopCamera(); });
 async function stopScreenShare() {
   if (!screenStream) return;
   const tracks = screenStream.getTracks();
